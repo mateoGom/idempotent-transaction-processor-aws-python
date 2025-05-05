@@ -1,0 +1,130 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Idempotent Transaction Processing Architecture (Serverless, Python)
+
+Resources:
+
+  # DynamoDB Tables
+  UsersTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: Users
+      AttributeDefinitions:
+        - AttributeName: userId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: userId
+          KeyType: HASH
+      BillingMode: PAY_PER_REQUEST
+
+  TransactionsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: Transactions
+      AttributeDefinitions:
+        - AttributeName: transactionId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: transactionId
+          KeyType: HASH
+      BillingMode: PAY_PER_REQUEST
+
+  # SNS Topic
+  TransactionEventsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: transaction-events
+
+  # EventBridge Bus
+  TransactionEventBus:
+    Type: AWS::Events::EventBus
+    Properties:
+      Name: TransactionEventBus
+
+  # IAM Role for Lambda
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: LambdaExecutionRole
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: LambdaBasicExecution
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - sns:Publish
+                  - events:PutEvents
+                Resource: "*"
+
+  # Lambda Function (inline code)
+  ProcessTransactionFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: ProcessTransaction
+      Handler: index.lambda_handler
+      Runtime: python3.11
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        ZipFile: |
+          import json
+
+          def lambda_handler(event, context):
+              return {
+                  'statusCode': 200,
+                  'body': json.dumps('Hola Mundo desde Lambda!')
+              }
+      Environment:
+        Variables:
+          USERS_TABLE: !Ref UsersTable
+          TRANSACTIONS_TABLE: !Ref TransactionsTable
+          SNS_TOPIC_ARN: !Ref TransactionEventsTopic
+          EVENT_BUS_NAME: !Ref TransactionEventBus
+
+  # API Gateway
+  TransactionApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: TransactionApi
+
+  TransactionResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !GetAtt TransactionApi.RootResourceId
+      PathPart: transacciones
+      RestApiId: !Ref TransactionApi
+
+  PostMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      HttpMethod: POST
+      AuthorizationType: NONE
+      ResourceId: !Ref TransactionResource
+      RestApiId: !Ref TransactionApi
+      Integration:
+        IntegrationHttpMethod: POST
+        Type: AWS_PROXY
+        Uri: !Sub
+          - arn:aws:apigateway:${Region}:lambda:path/2015-03-31/functions/${LambdaArn}/invocations
+          - Region: !Ref "AWS::Region"
+            LambdaArn: !GetAtt ProcessTransactionFunction.Arn
+
+  LambdaApiPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref ProcessTransactionFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${TransactionApi}/*/POST/transacciones

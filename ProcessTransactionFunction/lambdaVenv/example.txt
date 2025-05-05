@@ -1,0 +1,5 @@
+{
+  "transactionId": "txn-004",
+  "userId": "user-123",
+  "amount": 50.0
+}
